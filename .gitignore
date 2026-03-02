@@ -6,3 +6,6 @@
 
 # macOS metadata
 .DS_Store
+
+# CodeQL
+_codeql_detected_source_root
