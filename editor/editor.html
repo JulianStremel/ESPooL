@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Kennfeld Editor + 3D Ansicht</title>
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin:10px 0; }
+    label { display:inline-flex; gap:8px; align-items:center; }
+    input[type="number"] { width: 110px; padding: 6px 8px; }
+    button, select { padding: 8px 10px; cursor: pointer; }
+    table { border-collapse: collapse; width: 100%; max-width: 980px; }
+    th, td { border: 1px solid rgba(128,128,128,.4); padding: 6px; text-align: center; }
+    th { position: sticky; top: 0; background: color-mix(in srgb, Canvas 92%, transparent); }
+    td.rpm { font-weight: 600; white-space: nowrap; }
+    td input {
+      width: 70px; padding: 6px; text-align: right;
+      border: 1px solid rgba(128,128,128,.5); border-radius: 6px;
+    }
+    .gridwrap { overflow:auto; max-width: 100%; border-radius: 12px; border:1px solid rgba(128,128,128,.35); }
+    .small { font-size: 12px; opacity: .8; }
+    textarea {
+      width: 100%; max-width: 980px; height: 210px; padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      border-radius: 10px; border: 1px solid rgba(128,128,128,.5);
+    }
+    #plot { width: 100%; max-width: 980px; height: 520px; border-radius: 12px; overflow:hidden;
+            border: 1px solid rgba(128,128,128,.35); }
+  </style>
+</head>
+<body>
+  <h1>Boost-Solenoid Kennfeld Editor (RPM × Load → PWM 0..255) + 3D</h1>
+
+  <div class="row">
+    <label>Min PWM <input id="minPwm" type="number" value="0" /></label>
+    <label>Max PWM <input id="maxPwm" type="number" value="255" /></label>
+    <button id="clampBtn">Alle clampen</button>
+    <button id="smoothBtn" title="Einfaches Glätten (3×3 Mittelwert, 1 Durchgang)">Glätten</button>
+
+    <label>Ansicht
+      <select id="viewMode">
+        <option value="surface" selected>3D Surface</option>
+        <option value="heatmap">2D Heatmap</option>
+      </select>
+    </label>
+
+    <span id="status" class="small"></span>
+  </div>
+
+  <div class="gridwrap">
+    <table id="mapTable"></table>
+  </div>
+
+  <div class="row">
+    <button id="exportCBtn">Export C</button>
+    <button id="exportJsonBtn">Export JSON</button>
+    <button id="importJsonBtn">Import JSON</button>
+    <button id="resetBtn">Reset (Beispiel)</button>
+    <span class="small">Tipp: Pfeiltasten navigieren. Änderungen aktualisieren Plot live.</span>
+  </div>
+
+  <div id="plot"></div>
+
+  <textarea id="io" spellcheck="false" placeholder="Hier erscheint Export (C/JSON). Für Import JSON hier einfügen."></textarea>
+
+<script>
+(() => {
+  // Axes
+  const RPM  = [0,1000,2000,3000,4000,5000,6000,7000,8000,9000];
+  const LOAD = [0,25,50,75,100];
+
+  // Base duty example (bleed style: PWM opens solenoid => boost increases)
+  const DEFAULT = [
+    [0,0,0,0,0],
+    [0,0,5,15,25],
+    [0,4,18,55,105],
+    [0,8,30,85,145],
+    [0,10,34,95,155],
+    [0,8,30,88,150],
+    [0,6,25,75,138],
+    [0,4,20,62,125],
+    [0,3,15,50,112],
+    [0,2,12,40,100],
+  ];
+
+  let data = DEFAULT.map(r => r.slice());
+
+  const elTable  = document.getElementById('mapTable');
+  const elMin    = document.getElementById('minPwm');
+  const elMax    = document.getElementById('maxPwm');
+  const elIO     = document.getElementById('io');
+  const elStatus = document.getElementById('status');
+  const elPlot   = document.getElementById('plot');
+  const elView   = document.getElementById('viewMode');
+
+  function clamp(v, lo, hi) {
+    v = Number(v);
+    if (Number.isNaN(v)) return lo;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+  }
+
+  function getBounds() {
+    let lo = Number(elMin.value);
+    let hi = Number(elMax.value);
+    if (!Number.isFinite(lo)) lo = 0;
+    if (!Number.isFinite(hi)) hi = 255;
+    if (lo > hi) [lo, hi] = [hi, lo];
+    return { lo, hi };
+  }
+
+  function setStatus(msg) {
+    elStatus.textContent = msg || "";
+    if (msg) setTimeout(() => { elStatus.textContent = ""; }, 2200);
+  }
+
+  function renderTable() {
+    let html = `<tr><th>RPM \\ Load%</th>${LOAD.map(l => `<th>${l}</th>`).join('')}</tr>`;
+    for (let r=0; r<RPM.length; r++) {
+      html += `<tr><td class="rpm">${String(RPM[r]).padStart(4,'0')}</td>`;
+      for (let c=0; c<LOAD.length; c++) {
+        html += `<td><input id="cell_${r}_${c}" type="number" value="${data[r][c]}"></td>`;
+      }
+      html += `</tr>`;
+    }
+    elTable.innerHTML = html;
+
+    for (let r=0; r<RPM.length; r++) {
+      for (let c=0; c<LOAD.length; c++) {
+        const inp = document.getElementById(`cell_${r}_${c}`);
+        inp.addEventListener('input', () => {
+          const { lo, hi } = getBounds();
+          data[r][c] = clamp(inp.value, lo, hi);
+          schedulePlotUpdate();
+        });
+        inp.addEventListener('blur', () => {
+          const { lo, hi } = getBounds();
+          data[r][c] = clamp(inp.value, lo, hi);
+          inp.value = data[r][c];
+          schedulePlotUpdate();
+        });
+        inp.addEventListener('keydown', (e) => {
+          let nr=r, nc=c;
+          if (e.key === 'ArrowUp') nr = Math.max(0, r-1);
+          else if (e.key === 'ArrowDown') nr = Math.min(RPM.length-1, r+1);
+          else if (e.key === 'ArrowLeft') nc = Math.max(0, c-1);
+          else if (e.key === 'ArrowRight') nc = Math.min(LOAD.length-1, c+1);
+          else return;
+          e.preventDefault();
+          const next = document.getElementById(`cell_${nr}_${nc}`);
+          next?.focus(); next?.select();
+        });
+      }
+    }
+  }
+
+  function clampAll() {
+    const { lo, hi } = getBounds();
+    for (let r=0; r<RPM.length; r++) {
+      for (let c=0; c<LOAD.length; c++) data[r][c] = clamp(data[r][c], lo, hi);
+    }
+    renderTable();
+    schedulePlotUpdate(true);
+    setStatus(`Geclamped auf ${lo}..${hi}`);
+  }
+
+  // 3x3 mean filter (one pass), borders kept
+  function smoothOnce() {
+    const { lo, hi } = getBounds();
+    const out = data.map(r => r.slice());
+    for (let r=1; r<RPM.length-1; r++) {
+      for (let c=1; c<LOAD.length-1; c++) {
+        let sum = 0;
+        for (let rr=r-1; rr<=r+1; rr++) for (let cc=c-1; cc<=c+1; cc++) sum += Number(data[rr][cc]);
+        out[r][c] = clamp(Math.round(sum/9), lo, hi);
+      }
+    }
+    data = out;
+    renderTable();
+    schedulePlotUpdate(true);
+    setStatus("Glätten angewendet");
+  }
+
+  function exportC() {
+    const lines = [];
+    lines.push("// load columns: " + LOAD.join(", ") + " (%)");
+    lines.push("");
+    for (let r=0; r<RPM.length; r++) {
+      const tag = String(RPM[r]).padStart(4,'0');
+      lines.push(`int rpm_${tag}[] = { ${data[r].join(", ")} };`);
+    }
+    lines.push("");
+    lines.push("int* table[] = {");
+    for (let r=0; r<RPM.length; r++) {
+      const tag = String(RPM[r]).padStart(4,'0');
+      lines.push(`  rpm_${tag}${r===RPM.length-1 ? "" : ","}`);
+    }
+    lines.push("};");
+    elIO.value = lines.join("\n");
+    setStatus("C exportiert");
+  }
+
+  function exportJSON() {
+    elIO.value = JSON.stringify({ rpm: RPM, load: LOAD, values: data }, null, 2);
+    setStatus("JSON exportiert");
+  }
+
+  function importJSON() {
+    let obj;
+    try { obj = JSON.parse(elIO.value); } catch { setStatus("JSON ungültig"); return; }
+    const ok =
+      obj && Array.isArray(obj.rpm) && Array.isArray(obj.load) && Array.isArray(obj.values) &&
+      obj.rpm.length===RPM.length && obj.load.length===LOAD.length &&
+      obj.rpm.every((v,i)=>Number(v)===RPM[i]) &&
+      obj.load.every((v,i)=>Number(v)===LOAD[i]) &&
+      obj.values.length===RPM.length &&
+      obj.values.every(row => Array.isArray(row) && row.length===LOAD.length);
+    if (!ok) { setStatus("JSON passt nicht (Achsen/Dimensionen)"); return; }
+
+    const { lo, hi } = getBounds();
+    data = obj.values.map(row => row.map(v => clamp(v, lo, hi)));
+    renderTable();
+    schedulePlotUpdate(true);
+    setStatus("JSON importiert");
+  }
+
+  function reset() {
+    data = DEFAULT.map(r => r.slice());
+    renderTable();
+    schedulePlotUpdate(true);
+    setStatus("Reset");
+  }
+
+  // --- Plotly 3D / Heatmap ---
+  function plotDataTrace(mode) {
+    if (mode === "heatmap") {
+      return [{
+        type: "heatmap",
+        x: LOAD,
+        y: RPM,
+        z: data,
+        hovertemplate: "Load %{x}%<br>RPM %{y}<br>PWM %{z}<extra></extra>"
+      }];
+    }
+    return [{
+      type: "surface",
+      x: LOAD,
+      y: RPM,
+      z: data,
+      hovertemplate: "Load %{x}%<br>RPM %{y}<br>PWM %{z}<extra></extra>"
+    }];
+  }
+
+  function plotLayout(mode) {
+    const common = {
+      margin: { l: 55, r: 10, t: 35, b: 45 },
+      title: { text: mode === "heatmap" ? "Kennfeld Heatmap" : "Kennfeld 3D Surface" }
+    };
+    if (mode === "heatmap") {
+      return {
+        ...common,
+        xaxis: { title: "Load (%)" },
+        yaxis: { title: "RPM" }
+      };
+    }
+    return {
+      ...common,
+      scene: {
+        xaxis: { title: "Load (%)" },
+        yaxis: { title: "RPM" },
+        zaxis: { title: "PWM (0..255)" }
+      }
+    };
+  }
+
+  function renderPlot(forceNew=false) {
+    const mode = elView.value;
+    const traces = plotDataTrace(mode);
+    const layout = plotLayout(mode);
+    const config = { responsive: true, displaylogo: false };
+
+    if (forceNew) {
+      Plotly.newPlot(elPlot, traces, layout, config);
+    } else {
+      Plotly.react(elPlot, traces, layout, config);
+    }
+  }
+
+  // debounce plot updates (typing shouldn't hammer Plotly)
+  let plotTimer = null;
+  function schedulePlotUpdate(force=false) {
+    if (plotTimer) clearTimeout(plotTimer);
+    plotTimer = setTimeout(() => {
+      renderPlot(force);
+      plotTimer = null;
+    }, 80);
+  }
+
+  // events
+  document.getElementById('clampBtn').addEventListener('click', clampAll);
+  document.getElementById('smoothBtn').addEventListener('click', smoothOnce);
+  document.getElementById('exportCBtn').addEventListener('click', exportC);
+  document.getElementById('exportJsonBtn').addEventListener('click', exportJSON);
+  document.getElementById('importJsonBtn').addEventListener('click', importJSON);
+  document.getElementById('resetBtn').addEventListener('click', reset);
+  elView.addEventListener('change', () => renderPlot(true));
+
+  // init
+  renderTable();
+  renderPlot(true);
+})();
+</script>
+</body>
+</html>
