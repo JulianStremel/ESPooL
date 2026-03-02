@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "author": "Julian Stremel",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "wokwi-breadboard", "id": "bb1", "top": -281.4, "left": -112.4, "attrs": {} },
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": -9.78, "left": -33.83, "attrs": {} },
+    {
+      "type": "wokwi-slide-potentiometer",
+      "id": "pot2",
+      "top": -446.2,
+      "left": 191,
+      "attrs": { "travelLength": "30" }
+    },
+    { "type": "wokwi-led", "id": "led1", "top": 6, "left": 205.4, "attrs": { "color": "red" } },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 42.35,
+      "left": 240,
+      "attrs": { "value": "1000" }
+    },
+    {
+      "type": "wokwi-slide-potentiometer",
+      "id": "pot1",
+      "top": -446.2,
+      "left": 421.4,
+      "attrs": { "travelLength": "30" }
+    }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:5V", "bb1:bp.1", "red", [ "h-57.65", "v-19.2" ] ],
+    [ "esp:GND.1", "bb1:bn.1", "black", [ "h0" ] ],
+    [ "pot2:VCC", "bb1:tp.1", "red", [ "h0" ] ],
+    [ "esp:3V3.1", "bb1:tp.1", "green", [ "v-67.2", "h-115.25", "v-220.8" ] ],
+    [ "bb1:bn.2", "bb1:tn.2", "green", [ "v0" ] ],
+    [ "pot2:SIG", "esp:1", "green", [ "h-38.4", "v431.2" ] ],
+    [ "pot2:GND", "bb1:tn.41", "black", [ "v0" ] ],
+    [ "led1:C", "bb1:bn.23", "green", [ "v0", "h-38" ] ],
+    [ "led1:A", "r1:1", "green", [ "v0" ] ],
+    [ "r1:2", "esp:37", "green", [ "v0", "h46.8", "v38.4" ] ],
+    [ "pot2:VCC", "pot1:VCC", "red", [ "h0", "v-48", "h230.4" ] ],
+    [ "pot2:GND", "pot1:GND", "black", [ "v-38.4", "h226" ] ],
+    [ "pot1:SIG", "esp:2", "green", [ "v76", "h-345.6", "v364.8" ] ]
+  ],
+  "dependencies": {}
+}
